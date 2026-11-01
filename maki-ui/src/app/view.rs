@@ -13,6 +13,7 @@ use crate::theme;
 use maki_lua::Split;
 use maki_providers::RequestOptions;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Widget};
@@ -37,6 +38,10 @@ struct ViewLayout {
 }
 
 impl App {
+    pub(crate) fn take_native_segments(&mut self) -> Vec<Buffer> {
+        self.chats[self.active_chat].take_native_segments()
+    }
+
     fn prompt_open(&self) -> bool {
         self.pack_review.is_open() || self.permission_prompt.is_open()
     }

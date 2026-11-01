@@ -2,8 +2,10 @@ use shell_words::split;
 use std::io::{Write, stdout};
 use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::terminal_image;
 use color_eyre::Result;
 use crossterm::Command;
 use crossterm::ExecutableCommand;
@@ -16,6 +18,9 @@ use crossterm::event::{
 use crossterm::event::{DisableFocusChange, EnableFocusChange};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_config::NotificationMethod;
+use ratatui::backend::{Backend, ClearType};
+
+static NATIVE_PAGER: AtomicBool = AtomicBool::new(false);
 
 const FALLBACK_NOTIFICATION_MESSAGE: &str = "Maki needs attention";
 const NOTIFICATION_TITLE: &str = "Maki";
@@ -30,6 +35,34 @@ const POP_WINDOW_TITLE_SEQUENCE: &str = "\u{1b}[23;2t";
 const TMUX_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub(crate) struct TerminalGuard;
+
+pub(crate) fn native_pager(terminal: &mut ratatui::DefaultTerminal, open: bool) -> Result<bool> {
+    if !native_scrollback() || NATIVE_PAGER.load(Ordering::Relaxed) == open {
+        return Ok(false);
+    }
+    if open {
+        stdout().execute(EnterAlternateScreen)?;
+        stdout().execute(EnableMouseCapture)?;
+    } else {
+        stdout().execute(LeaveAlternateScreen)?;
+        stdout().execute(DisableMouseCapture)?;
+    }
+    NATIVE_PAGER.store(open, Ordering::Relaxed);
+    terminal_image::invalidate();
+    let area = terminal.get_frame().area();
+    let backend = terminal.backend_mut();
+    for y in area.top()..area.bottom() {
+        backend.set_cursor_position((area.x, y))?;
+        backend.clear_region(ClearType::CurrentLine)?;
+    }
+    terminal.swap_buffers();
+    terminal.swap_buffers();
+    Ok(true)
+}
+
+pub(crate) fn native_scrollback() -> bool {
+    std::env::var("MAKI_NATIVE_SCROLLBACK").is_ok_and(|v| v == "1")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TerminalMux {
@@ -295,10 +328,19 @@ impl TerminalMux {
 
 impl TerminalGuard {
     pub(crate) fn init() -> Result<(Self, ratatui::DefaultTerminal)> {
-        let terminal = ratatui::init();
+        let terminal = if native_scrollback() {
+            let height = crossterm::terminal::size()?.1.max(1);
+            ratatui::try_init_with_options(ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Inline(height),
+            })?
+        } else {
+            ratatui::init()
+        };
         write_mux_sequence(PUSH_WINDOW_TITLE_SEQUENCE);
         stdout().execute(EnableBracketedPaste)?;
-        stdout().execute(EnableMouseCapture)?;
+        if !native_scrollback() {
+            stdout().execute(EnableMouseCapture)?;
+        }
         enable_focus_change();
         push_keyboard_enhancement();
         Ok((Self, terminal))
@@ -346,9 +388,13 @@ fn pop_terminal_modes() {
 fn resume(terminal: &mut ratatui::DefaultTerminal) {
     crate::terminal_image::invalidate();
     write_mux_sequence(PUSH_WINDOW_TITLE_SEQUENCE);
-    stdout().execute(EnterAlternateScreen).ok();
+    if !native_scrollback() || NATIVE_PAGER.load(Ordering::Relaxed) {
+        stdout().execute(EnterAlternateScreen).ok();
+    }
     stdout().execute(EnableBracketedPaste).ok();
-    stdout().execute(EnableMouseCapture).ok();
+    if !native_scrollback() || NATIVE_PAGER.load(Ordering::Relaxed) {
+        stdout().execute(EnableMouseCapture).ok();
+    }
     enable_focus_change();
     terminal::enable_raw_mode().ok();
     push_keyboard_enhancement();

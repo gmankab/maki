@@ -27,6 +27,7 @@ use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
 use crate::render_worker::RenderWorker;
 use crate::selection::{DocPos, RowPos, Selection};
 use crate::splash::{ColorTransition, Splash};
+use crate::terminal::native_scrollback;
 use crate::terminal_image;
 use crate::theme;
 use crate::update;
@@ -49,13 +50,16 @@ use maki_lua::{EventHandle, LuaCommandInfo, WARM_TOOL_CAP, WinView};
 use maki_storage::id::{MakiId, SessionRef};
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 
 use crate::repaint::{Cadence, Dirty};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use tracing::warn;
 
+const NATIVE_CHUNK_ROWS: u16 = 256;
 const REFLOW_MARGIN_VIEWPORTS: u32 = 1;
 /// How far outside the drawn range an image keeps its encoded protocol.
 const IMAGE_KEEP_MARGIN_SEGMENTS: usize = 8;
@@ -84,6 +88,7 @@ pub struct PromptProgress {
 }
 
 pub struct MessagesPanel {
+    native_written: ScrollPos,
     messages: Vec<DisplayMessage>,
     streaming_thinking: StreamingContent,
     streaming_text: StreamingContent,
@@ -137,6 +142,7 @@ impl MessagesPanel {
         let assistant = assistant_style();
         let ms = ui_config.typewriter_ms_per_char;
         Self {
+            native_written: ScrollPos::default(),
             messages: Vec::new(),
             streaming_thinking: StreamingContent::new(
                 thinking.prefix,
@@ -180,6 +186,58 @@ impl MessagesPanel {
             task_id: None,
             live_start: 0,
         }
+    }
+
+    pub fn take_native_segments(&mut self) -> Vec<Buffer> {
+        if !self.auto_scroll {
+            return Vec::new();
+        }
+        let end = self.scroll.min(ScrollPos {
+            seg: self.live_start.min(self.cache.len()),
+            row: 0,
+        });
+        let mut buffers = Vec::new();
+        while self.native_written < end {
+            let pos = self.native_written;
+            self.reflowed_height(pos.seg, self.viewport_width);
+            let Some(seg) = self.cache.get(pos.seg) else {
+                break;
+            };
+            let height = seg.height(self.viewport_width);
+            let limit = if pos.seg == end.seg { end.row } else { height };
+            if pos.row >= limit {
+                self.native_written = ScrollPos {
+                    seg: pos.seg + 1,
+                    row: 0,
+                };
+                continue;
+            }
+            let rows = (limit - pos.row).min(NATIVE_CHUNK_ROWS);
+            let mut buffer =
+                Buffer::empty(Rect::new(0, 0, self.viewport_width.saturating_add(1), rows));
+            let area = Rect::new(0, 0, self.viewport_width, rows);
+            let style = seg
+                .tool_id
+                .as_ref()
+                .map_or(Style::default(), |_| theme::current().tool_bg);
+            let mut walk = seg.rows_from(pos.row, self.viewport_width);
+            if let Some((lines, range)) = walk.next_chunk(rows) {
+                Paragraph::new(lines.to_vec())
+                    .wrap(Wrap { trim: false })
+                    .scroll((pos.row - range.start, 0))
+                    .style(style)
+                    .render(area, &mut buffer);
+            }
+            buffers.push(buffer);
+            self.native_written.row += rows;
+            if self.native_written.row >= height {
+                self.native_written = ScrollPos {
+                    seg: pos.seg + 1,
+                    row: 0,
+                };
+            }
+        }
+        buffers
     }
 
     pub fn set_restore_channel(&mut self, event_tx: Option<EventSender>) {
@@ -237,6 +295,7 @@ impl MessagesPanel {
 
     pub fn load_messages(&mut self, msgs: Vec<DisplayMessage>) {
         self.messages = msgs;
+        self.native_written = ScrollPos::default();
         self.cache.clear();
         self.expanded_tools.clear();
         self.lua_clicks.clear();
@@ -697,8 +756,9 @@ impl MessagesPanel {
         } else {
             layout.advance(self.scroll, rows)
         };
-        let clamped = moved.min(layout.bottom(self.viewport_height));
-        self.scroll_to(clamped);
+        let bottom = layout.bottom(self.viewport_height);
+        self.scroll_to(moved.min(bottom));
+        self.auto_scroll = self.scroll == bottom;
     }
 
     /// Always unpins, and the next `view` re-pins if this lands on the
@@ -1083,7 +1143,7 @@ impl MessagesPanel {
         // Both walks are O(transcript) and a resize makes each one re-wrap
         // every segment it touches, so they stay behind the toggle that
         // decides whether anything is drawn from them.
-        if scrollbar::is_enabled() {
+        if scrollbar::is_enabled() && (!native_scrollback() || !self.auto_scroll) {
             let layout = self.layout();
             let total_rows = layout.total_rows();
             if total_rows > u32::from(area.height) {

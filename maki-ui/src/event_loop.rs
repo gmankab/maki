@@ -7,6 +7,8 @@
 //! waits on every event source at once and wakes the moment a plugin action,
 //! agent event, or keypress arrives instead of sleeping in `event::poll`.
 
+use crossterm::SynchronizedUpdate;
+use std::io::stdout;
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -773,12 +775,59 @@ impl<'t> EventLoop<'t> {
     /// and the hide that goes with it, so a widget that does ask for one
     /// cannot bring the block cursor back.
     fn paint(&mut self) -> Result<()> {
+        if terminal::native_scrollback() {
+            stdout().sync_update(|_| self.paint_frame())?
+        } else {
+            self.paint_frame()
+        }
+    }
+
+    fn paint_frame(&mut self) -> Result<()> {
         let app = &mut self.sessions[self.focused].app;
         let mut cursor = None;
+        terminal::native_pager(self.terminal, !app.chats[app.active_chat].auto_scroll())?;
         self.terminal.draw(|f| {
             cursor = app.view(f);
             color_compat::downgrade_if_needed(f.buffer_mut());
         })?;
+        if terminal::native_pager(self.terminal, !app.chats[app.active_chat].auto_scroll())? {
+            self.terminal.draw(|f| {
+                cursor = app.view(f);
+                color_compat::downgrade_if_needed(f.buffer_mut());
+            })?;
+        }
+        if terminal::native_scrollback() && app.status != Status::Streaming {
+            let segments = app.take_native_segments();
+            if !segments.is_empty() {
+                let mut pending = segments.into_iter().peekable();
+                while pending.peek().is_some() {
+                    let mut batch = Vec::new();
+                    let mut height = 0u16;
+                    while let Some(buffer) =
+                        pending.next_if(|b| height.checked_add(b.area.height).is_some())
+                    {
+                        height += buffer.area.height;
+                        batch.push(buffer);
+                    }
+                    self.terminal.insert_before(height, |buf| {
+                        let mut y = 0;
+                        for buffer in batch {
+                            let len = buffer.content.len();
+                            let start = usize::from(y) * usize::from(buf.area.width);
+                            buf.content[start..start + len].clone_from_slice(&buffer.content);
+                            y += buffer.area.height;
+                        }
+                        color_compat::downgrade_if_needed(buf);
+                    })?;
+                }
+                // insert_before can invalidate the inline viewport.
+                self.terminal.draw(|f| {
+                    cursor = app.view(f);
+                    color_compat::downgrade_if_needed(f.buffer_mut());
+                })?;
+            }
+        }
+
         if let Some(pos) = cursor {
             self.terminal.hide_cursor()?;
             self.terminal.set_cursor_position(pos)?;

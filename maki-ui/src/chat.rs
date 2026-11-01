@@ -26,6 +26,7 @@ use maki_lua::{LuaCommandInfo, WinView};
 use maki_providers::{ContentBlock, ImageSource, Message, RequestOptions, Role};
 use maki_storage::id::MakiId;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
@@ -432,6 +433,10 @@ impl Chat {
 
     pub fn cadence(&self) -> Cadence {
         self.messages_panel.cadence()
+    }
+
+    pub fn take_native_segments(&mut self) -> Vec<Buffer> {
+        self.messages_panel.take_native_segments()
     }
 
     pub fn view(
