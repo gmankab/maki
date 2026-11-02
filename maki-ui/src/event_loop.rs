@@ -775,11 +775,7 @@ impl<'t> EventLoop<'t> {
     /// and the hide that goes with it, so a widget that does ask for one
     /// cannot bring the block cursor back.
     fn paint(&mut self) -> Result<()> {
-        if terminal::native_scrollback() {
-            stdout().sync_update(|_| self.paint_frame())?
-        } else {
-            self.paint_frame()
-        }
+        stdout().sync_update(|_| self.paint_frame())?
     }
 
     fn paint_frame(&mut self) -> Result<()> {
@@ -796,7 +792,7 @@ impl<'t> EventLoop<'t> {
                 color_compat::downgrade_if_needed(f.buffer_mut());
             })?;
         }
-        if terminal::native_scrollback() && app.status != Status::Streaming {
+        if app.status != Status::Streaming {
             let segments = app.take_native_segments();
             if !segments.is_empty() {
                 let mut pending = segments.into_iter().peekable();

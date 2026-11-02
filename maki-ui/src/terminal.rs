@@ -37,7 +37,7 @@ const TMUX_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
 pub(crate) struct TerminalGuard;
 
 pub(crate) fn native_pager(terminal: &mut ratatui::DefaultTerminal, open: bool) -> Result<bool> {
-    if !native_scrollback() || NATIVE_PAGER.load(Ordering::Relaxed) == open {
+    if NATIVE_PAGER.load(Ordering::Relaxed) == open {
         return Ok(false);
     }
     if open {
@@ -58,10 +58,6 @@ pub(crate) fn native_pager(terminal: &mut ratatui::DefaultTerminal, open: bool) 
     terminal.swap_buffers();
     terminal.swap_buffers();
     Ok(true)
-}
-
-pub(crate) fn native_scrollback() -> bool {
-    std::env::var("MAKI_NATIVE_SCROLLBACK").is_ok_and(|v| v == "1")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,19 +324,12 @@ impl TerminalMux {
 
 impl TerminalGuard {
     pub(crate) fn init() -> Result<(Self, ratatui::DefaultTerminal)> {
-        let terminal = if native_scrollback() {
-            let height = crossterm::terminal::size()?.1.max(1);
-            ratatui::try_init_with_options(ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(height),
-            })?
-        } else {
-            ratatui::init()
-        };
+        let height = terminal::size()?.1.max(1);
+        let terminal = ratatui::try_init_with_options(ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Inline(height),
+        })?;
         write_mux_sequence(PUSH_WINDOW_TITLE_SEQUENCE);
         stdout().execute(EnableBracketedPaste)?;
-        if !native_scrollback() {
-            stdout().execute(EnableMouseCapture)?;
-        }
         enable_focus_change();
         push_keyboard_enhancement();
         Ok((Self, terminal))
@@ -388,11 +377,11 @@ fn pop_terminal_modes() {
 fn resume(terminal: &mut ratatui::DefaultTerminal) {
     crate::terminal_image::invalidate();
     write_mux_sequence(PUSH_WINDOW_TITLE_SEQUENCE);
-    if !native_scrollback() || NATIVE_PAGER.load(Ordering::Relaxed) {
+    if NATIVE_PAGER.load(Ordering::Relaxed) {
         stdout().execute(EnterAlternateScreen).ok();
     }
     stdout().execute(EnableBracketedPaste).ok();
-    if !native_scrollback() || NATIVE_PAGER.load(Ordering::Relaxed) {
+    if NATIVE_PAGER.load(Ordering::Relaxed) {
         stdout().execute(EnableMouseCapture).ok();
     }
     enable_focus_change();

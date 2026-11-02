@@ -441,6 +441,9 @@ fn scrollbar_visibility(line_count: usize, expected: bool) {
         .streaming_text
         .set_buffer(&"line\n".repeat(line_count));
     let terminal = render(&mut panel, 80, 10);
+    assert!(!has_scrollbar_thumb(&terminal));
+    panel.scroll(panel.half_page());
+    let terminal = render(&mut panel, 80, 10);
     assert_eq!(has_scrollbar_thumb(&terminal), expected);
 }
 

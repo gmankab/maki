@@ -27,7 +27,6 @@ use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
 use crate::render_worker::RenderWorker;
 use crate::selection::{DocPos, RowPos, Selection};
 use crate::splash::{ColorTransition, Splash};
-use crate::terminal::native_scrollback;
 use crate::terminal_image;
 use crate::theme;
 use crate::update;
@@ -1143,7 +1142,7 @@ impl MessagesPanel {
         // Both walks are O(transcript) and a resize makes each one re-wrap
         // every segment it touches, so they stay behind the toggle that
         // decides whether anything is drawn from them.
-        if scrollbar::is_enabled() && (!native_scrollback() || !self.auto_scroll) {
+        if scrollbar::is_enabled() && !self.auto_scroll {
             let layout = self.layout();
             let total_rows = layout.total_rows();
             if total_rows > u32::from(area.height) {
